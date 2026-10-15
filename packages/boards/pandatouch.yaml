@@ -1,0 +1,138 @@
+# ESP Screens - BTT Panda Touch board: a 5-inch 800 x 480 IPS panel (16-bit RGB, driven in DE mode: the panel has no
+# HSYNC or VSYNC line) with GT911 capacitive touch, an ESP32-S3 with 16 MB flash and 8 MB of octal PSRAM. The USB-C
+# port is a CH340K serial bridge on UART0 (flashing and logs); the USB-A port is the chip's own USB host.
+#
+# Unlike the Waveshare boards there is no expander here: the panel's reset, the touch panel's reset and interrupt and
+# the backlight are plain GPIOs, and the backlight is a PWM pin, so the screen can dim, stand by and go dark
+# (BACKLIGHT_DIMMABLE stays true, and backlight-always-on.yaml is not included).
+#
+# Pins come from BTT's firmware (bigtreetech/PandaTouch_IDF, include/pandatouch_board.h) and agree with the
+# ESPHome configuration of the Panda Touch thread on the Home Assistant forum. STATUS: a draft that has not been
+# built or run on the glass yet.
+#
+# A board file is the board's hardware, the facts the shared tree takes from it (its glass and its grid), and the
+# features it has; docs/PROFILES.md says how the files of a screen fit together. Two entry files include this one:
+# checkout/pandatouch.yaml (a build on this computer) and packages/pandatouch.yaml (the package a screen builds from
+# over GitHub).
+packages:
+  # The chip, its PSRAM and the ESP-IDF settings every ESP32-S3 RGB panel shares (and through it how every board's
+  # firmware is built).
+  hardware: !include ../hardware/esp32s3-rgb.yaml
+  look: !include ../looks/standard.yaml
+  touch: !include ../features/capacitive-touch.yaml
+  backlight: !include ../features/backlight.yaml
+  camera: !include ../features/camera.yaml
+  self_test: !include ../features/self-test.yaml
+  # No snapshot.yaml: the Waveshare 5 has the same 800 x 480 glass and leaves it out (a second frame in PSRAM).
+
+substitutions:
+  # The key of this board file; the firmware reports it so ESP Screens knows what board a screen is.
+  BOARD_ID: "pandatouch"
+  DEVICE_NAME: "pandatouch-new"
+  DEVICE_FRIENDLY_NAME: "My Panda Touch"
+
+  # The glass: the panel's own pixels, and its density: 933 diagonal pixels over 5 inches.
+  PANEL_W: "800"
+  PANEL_H: "480"
+  DISPLAY_DPI: "186.590"
+  # The tile grid, the same as the Waveshare 5 (the same glass): 3 x 3 lying down, each tile about 34 x 14 mm, and one
+  # column of five cards standing up (the glass is 65 x 109 mm).
+  GRID_COLS: "3"
+  GRID_ROWS: "3"
+  GRID_COLS_PORTRAIT: "1"
+  GRID_ROWS_PORTRAIT: "5"
+  # More tiles and pages than the 64 and eight of a board without PSRAM (firmware 0.34.0+).
+  SCREEN_MAX_TILES: "128"
+  SCREEN_MAX_PAGES: "24"
+  SCREEN_MAX_BAR_ITEMS: "12"
+  # LVGL's draw buffer as a share of the screen: 12 % is an eighth, 96 KB inside the chip on 800 x 480, as on the
+  # Waveshare 4.3 and 5. Read sensor.<screen>_heap_free after the first boot with a full layout: under 40 KB is too little.
+  LVGL_BUFFER_SIZE: "12%"
+
+  # Hardware a screen's own YAML may change (docs/EASY_SETUP.md, "Hardware-specific YAML overrides").
+  # BTT's own firmware drives the backlight at 30 kHz; the output block below says more.
+  BACKLIGHT_FREQUENCY: "30000Hz"
+  # The panel's pixel clock. 16 MHz is what the Waveshare 4.3 and 5 run on with the same chip and PSRAM, and it is above
+  # the 14 MHz that BTT's firmware states as the panel's minimum (PT_LCD_PCLK_HZ_MIN); BTT's own firmware runs 23 MHz
+  # with PSRAM at 120 MHz. If the picture slips sideways, flickers or shows flat colours, try 14800000Hz (the pixel clock
+  # of the forum configuration) or 18MHz.
+  DISPLAY_PCLK_FREQUENCY: "16MHz"
+
+# ============================================================
+# No need to edit below this line.
+# ============================================================
+
+esp32:
+  flash_size: 16MB
+
+logger:
+  tx_buffer_size: 2048
+  # The CH340K behind the USB-C port is on UART0.
+  hardware_uart: UART0
+
+i2c:
+  # The touch panel's bus; the name stays, plugins and overrides find the bus by it.
+  id: touch_bus
+  sda: GPIO2
+  scl: GPIO1
+  # BTT's firmware talks to the GT911 at 400 kHz.
+  frequency: 400kHz
+  scan: true
+
+output:
+  - platform: ledc
+    pin: GPIO21
+    id: gpio_backlight_pwm
+    frequency: ${BACKLIGHT_FREQUENCY}
+    min_power: 0.01
+    zero_means_zero: true
+    # The forum configuration caps the backlight at 30 %, and the reason is not known. BTT's own firmware drives it at
+    # 100 %. Start capped and raise it step by step while watching the board's temperature and its supply.
+    max_power: 0.3
+
+touchscreen:
+  - platform: gt911
+    id: ts_touch
+    i2c_id: touch_bus
+    display: my_display
+    update_interval: 20ms
+    interrupt_pin: GPIO40
+    reset_pin: GPIO41
+    # BTT's firmware maps the controller's coordinates straight onto 800 x 480, with no swap and no mirror.
+    calibration:
+      x_min: 0
+      x_max: 800
+      y_min: 0
+      y_max: 480
+
+display:
+  - platform: mipi_rgb
+    id: my_display
+    model: RPI
+    dimensions:
+      width: 800
+      height: 480
+    update_interval: never
+    auto_clear_enabled: false
+    # DE mode: no hsync_pin and no vsync_pin (BTT's board file has them at -1).
+    de_pin: GPIO38
+    pclk_pin: GPIO5
+    reset_pin:
+      number: GPIO46
+      # A strapping pin of the S3; the panel's reset only matters after boot.
+      ignore_strapping_warning: true
+    pclk_frequency: ${DISPLAY_PCLK_FREQUENCY}
+    # BTT's firmware samples on the falling edge of the pixel clock (pclk_active_neg = true).
+    pclk_inverted: true
+    # BTT's own timings (pandatouch_board.h); the line takes 820 pixel clocks and the frame 516 lines.
+    hsync_pulse_width: 4
+    hsync_back_porch: 8
+    hsync_front_porch: 8
+    vsync_pulse_width: 4
+    vsync_back_porch: 16
+    vsync_front_porch: 16
+    # Least significant bit first: BTT's DATA0 to DATA4 are blue, DATA5 to DATA10 green, DATA11 to DATA15 red.
+    data_pins:
+      red: [GPIO6, GPIO7, GPIO8, GPIO9, GPIO10]
+      green: [GPIO11, GPIO12, GPIO13, GPIO14, GPIO15, GPIO16]
+      blue: [GPIO17, GPIO18, GPIO48, GPIO47, GPIO39]
